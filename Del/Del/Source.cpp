@@ -29,10 +29,17 @@ enum OBJECTTYPE {
 //Screen dimension constants
 const int SCREEN_WIDTH = 640;
 const int SCREEN_HEIGHT = 480;
+TCPsocket clientSocket;   // The socket to use
+						  //Initialization flag
+bool success = true;
+
+IPaddress serverIP;       // The IP we will connect to
+const char *host;
+char buffer[512];
+SDLNet_SocketSet socketSet;
 
 int p2PosX;
 int p2PosY;
-Server server;
 
 using namespace std;
 
@@ -355,8 +362,6 @@ void Dot::render()
 
 bool init()
 {
-	//Initialization flag
-	bool success = true;
 
 	//Initialize SDL
 	if (SDL_Init(SDL_INIT_VIDEO) < 0)
@@ -404,8 +409,97 @@ bool init()
 		}
 	}
 
-	if (!server.ServerInit())
+	if (SDLNet_Init() < 0)
+	{
+		cout << "Failed to intialise SDN_net: " << SDLNet_GetError() << "\n";
 		success = false;
+	}
+	// Create the socket set with enough space to store our desired number of connections (i.e. sockets)
+	SDLNet_SocketSet socketSet = SDLNet_AllocSocketSet(1);
+	if (socketSet == NULL)
+	{
+		cout << "Failed to allocate the socket set: " << SDLNet_GetError() << "\n";
+		success = false;
+	}
+	else
+	{
+		cout << "Successfully allocated socket set." << endl;
+	}
+
+	// Try to resolve the host. If successful, this places the connection details in the serverIP object
+	int hostResolved = SDLNet_ResolveHost(&serverIP, "localhost", 1234);
+
+	if (hostResolved == -1)
+	{
+		cout << "Failed to resolve the server hostname: " << SDLNet_GetError() << "\nContinuing...\n";
+	}
+	else // If we successfully resolved the host then output the details
+	{
+		// Get our IP address in proper dot-quad format by breaking up the 32-bit unsigned host address and splitting it into an array of four 8-bit unsigned numbers...
+		Uint8 * dotQuad = (Uint8*)&serverIP.host;
+
+		//... and then outputting them cast to integers. Then read the last 16 bits of the serverIP object to get the port number
+		cout << "Successfully resolved host to IP: " << (unsigned short)dotQuad[0] << "." << (unsigned short)dotQuad[1] << "." << (unsigned short)dotQuad[2] << "." << (unsigned short)dotQuad[3];
+		cout << " port " << SDLNet_Read16(&serverIP.port) << endl << endl;
+	}
+
+	// Try to resolve the IP of the server, just for kicks
+	if ((host = SDLNet_ResolveIP(&serverIP)) == NULL)
+	{
+		cout << "Failed to resolve the server IP address: " << SDLNet_GetError() << endl;
+	}
+	else
+	{
+		cout << "Successfully resolved IP to host: " << host << endl;
+	}
+	clientSocket = SDLNet_TCP_Open(&serverIP);
+	if (!clientSocket)
+	{
+		cout << "Failed to open socket to server: " << SDLNet_GetError() << "\n";
+		exit(-1);
+	}
+	else // If we successfully opened a connection then check for the server response to our connection
+	{
+		cout << "Connection okay, about to read connection status from the server..." << endl;
+
+		// Add our socket to the socket set for polling
+		SDLNet_TCP_AddSocket(socketSet, clientSocket);
+
+		// Wait for up to five seconds for a response from the server
+		// Note: If we don't check the socket set and WAIT for the response, we'll be checking before the server can respond, and it'll look as if the server sent us nothing back
+		int activeSockets = SDLNet_CheckSockets(socketSet, 5000);
+
+		cout << "There are " << activeSockets << " socket(s) with data on them at the moment." << endl;
+		bool shutdownClient = true;
+		// Check if we got a response from the server
+		int gotServerResponse = SDLNet_SocketReady(clientSocket);
+
+		if (gotServerResponse != 0)
+		{
+			cout << "Got a response from the server... " << endl;
+			int serverResponseByteCount = SDLNet_TCP_Recv(clientSocket, buffer, 512);
+
+			cout << "Got the following from server: " << buffer << "(" << serverResponseByteCount << " bytes)" << endl;
+
+			// We got an okay from the server, so we can join!
+			if (strcmp(buffer, "OK") == 0)
+			{
+				// So set the flag to say we're not quitting out just yet
+				shutdownClient = false;
+
+				cout << "Joining server now..." << endl << endl;
+			}
+			else
+			{
+				cout << "Server is full... Terminating connection." << endl;
+			}
+		}
+		else
+		{
+			cout << "No response from server..." << endl;
+		}
+		socketSet = SDLNet_AllocSocketSet(30);
+	} // End of if we managed to open a connection to the server condition
 
 	return success;
 }
@@ -425,6 +519,14 @@ bool loadMedia()
 	return success;
 }
 
+void network() {
+	while (SDLNet_CheckSockets(socketSet, 0) > 0)
+	{
+
+	}
+}
+
+
 void close()
 {
 	//Free loaded images
@@ -436,7 +538,6 @@ void close()
 	gWindow = NULL;
 	gRenderer = NULL;
 
-	server.ServerClose();
 	//Quit SDL subsystems
 	IMG_Quit();
 	SDL_Quit();
@@ -444,6 +545,7 @@ void close()
 
 int main(int argc, char* args[])
 {
+	int inputLength = 0;
 	MESSAGETYPE msg;
 
 	//Start up SDL and create window
@@ -472,8 +574,6 @@ int main(int argc, char* args[])
 			//While application is running
 			while (!quit)
 			{
-				server.ServerRun(dot.getXPosition(), dot.getYPosition());
-
 
 				//Handle events on queue
 				while (SDL_PollEvent(&e) != 0)
@@ -490,6 +590,14 @@ int main(int argc, char* args[])
 
 				//Move the dot
 				dot.move();
+				inputLength = strlen(buffer) + 1;
+
+				strcpy(buffer, to_string(dot.getXPosition());
+				if (SDLNet_TCP_Send(clientSocket, (void *)buffer, inputLength) < inputLength)
+				{
+					cout << "Failed to send message: " << SDLNet_GetError() << endl;
+					exit(-1);
+				}
 
 				//Clear screen
 				SDL_SetRenderDrawColor(gRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
@@ -497,7 +605,6 @@ int main(int argc, char* args[])
 
 				//Render objects
 				dot.render();
-				server.CheckPlayerDisconnect();
 				//Update screen
 				SDL_RenderPresent(gRenderer);
 			}
